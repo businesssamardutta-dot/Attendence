@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   BarChart3,
   Download,
@@ -15,7 +15,8 @@ import {
   ChevronLeft,
   ChevronRight,
   Sparkles,
-  Layers
+  Layers,
+  X
 } from "lucide-react";
 import { AttendanceLog, CompanyName, Employee, UserProfile, VALID_COMPANIES, COMPANY_COLORS } from "../types";
 import {
@@ -87,7 +88,61 @@ export default function ReportsView({
   const [selectedCompany, setSelectedCompany] = useState<string>(
     selectedGlobalCompany || "ALL"
   );
-  const [selectedEmployee, setSelectedEmployee] = useState<string>("ALL");
+
+  // Sync when top global company dropdown changes
+  useEffect(() => {
+    if (selectedGlobalCompany) {
+      setSelectedCompany(selectedGlobalCompany);
+    }
+  }, [selectedGlobalCompany]);
+
+  // Comprehensive list of available employees (Master DB + Biometric logs)
+  const availableEmployees = useMemo(() => {
+    const list: { company: string; name: string }[] = [];
+    const seen = new Set<string>();
+
+    employees.forEach(e => {
+      if (selectedCompany === "ALL" || e.company_name === selectedCompany) {
+        const key = `${e.company_name}|${e.employee_name.trim()}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          list.push({ company: e.company_name, name: e.employee_name.trim() });
+        }
+      }
+    });
+
+    logs.forEach(l => {
+      if (selectedCompany === "ALL" || l.company === selectedCompany) {
+        const empName = (l.employee || "").trim();
+        if (empName) {
+          const key = `${l.company}|${empName}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            list.push({ company: l.company, name: empName });
+          }
+        }
+      }
+    });
+
+    return list.sort((a, b) => a.name.localeCompare(b.name));
+  }, [employees, logs, selectedCompany]);
+
+  const [selectedEmployee, setSelectedEmployee] = useState<string>("");
+
+  // Sync selected employee whenever available employees change
+  useEffect(() => {
+    if (availableEmployees.length > 0) {
+      const exists = availableEmployees.some(
+        e => e.name.toLowerCase() === selectedEmployee.toLowerCase()
+      );
+      if (!exists) {
+        setSelectedEmployee(availableEmployees[0].name);
+      }
+    } else {
+      setSelectedEmployee("");
+    }
+  }, [availableEmployees, selectedEmployee]);
+
   const [targetDate, setTargetDate] = useState<string>(
     initialParams?.date || detectedDefaultDate
   );
@@ -117,11 +172,6 @@ export default function ReportsView({
     { id: "date_range", title: "Custom Date-Range Report", desc: "Multi-day span attendance audit" }
   ];
 
-  // Filtered employees based on company selection
-  const availableEmployees = useMemo(() => {
-    return employees.filter(e => selectedCompany === "ALL" || e.company_name === selectedCompany);
-  }, [employees, selectedCompany]);
-
   // Compute Active Report Dataset
   const { headers, rows, metaInfo } = useMemo(() => {
     let repHeaders: string[] = [];
@@ -131,10 +181,7 @@ export default function ReportsView({
       Company: selectedCompany
     };
 
-    // Filter employees
     const targetEmps = availableEmployees;
-
-    // Filter logs
     const baseLogs = logs.filter(l => selectedCompany === "ALL" || l.company === selectedCompany);
 
     // -------------------------------------------------------------
@@ -147,7 +194,7 @@ export default function ReportsView({
 
       targetEmps.forEach(emp => {
         const empDayLogs = dayLogs.filter(
-          l => l.company === emp.company_name && l.employee.trim().toLowerCase() === emp.employee_name.trim().toLowerCase()
+          l => l.company === emp.company && l.employee.trim().toLowerCase() === emp.name.trim().toLowerCase()
         );
 
         const ins = empDayLogs.filter(p => (p.status || "").toUpperCase() === "IN" || (p.status || "").toLowerCase() === "check in");
@@ -174,14 +221,14 @@ export default function ReportsView({
 
         const isPresent = Boolean(firstIn || lastOut);
 
-        // Apply Report Type filters
+        // Apply filters
         if (reportType === "present" && !isPresent) return;
         if (reportType === "absent" && isPresent) return;
         if (reportType === "late" && !isLate) return;
 
         repRows.push([
-          emp.company_name,
-          emp.employee_name,
+          emp.company,
+          emp.name,
           firstIn ? formatToIndianTime(firstIn.timestamp) : "—",
           firstIn?.location || "—",
           lastOut ? formatToIndianTime(lastOut.timestamp) : "—",
@@ -218,7 +265,7 @@ export default function ReportsView({
 
       targetEmps.forEach(emp => {
         const empMonthLogs = monthLogs.filter(
-          l => l.company === emp.company_name && l.employee.trim().toLowerCase() === emp.employee_name.trim().toLowerCase()
+          l => l.company === emp.company && l.employee.trim().toLowerCase() === emp.name.trim().toLowerCase()
         );
 
         let presentDays = 0;
@@ -262,8 +309,8 @@ export default function ReportsView({
         const turnoutPct = daysInMonth > 0 ? `${Math.round((presentDays / daysInMonth) * 100)}%` : "0%";
 
         repRows.push([
-          emp.company_name,
-          emp.employee_name,
+          emp.company,
+          emp.name,
           daysInMonth,
           presentDays,
           absentDays,
@@ -279,18 +326,38 @@ export default function ReportsView({
     // 3. SINGLE EMPLOYEE 1-MONTH TIMESHEET (1st to 31st)
     // -------------------------------------------------------------
     else if (reportType === "employee_timesheet") {
-      repHeaders = ["Date (IST)", "Day of Week", "Status", "First IN (IST)", "IN Location", "Last OUT (IST)", "OUT Location", "Work Duration"];
+      repHeaders = [
+        "Company",
+        "Employee Name",
+        "Date (IST)",
+        "Day of Week",
+        "Status",
+        "First IN (IST)",
+        "Punch IN Location",
+        "Last OUT (IST)",
+        "Punch OUT Location",
+        "Work Duration"
+      ];
+
       const [yearStr, monthStr] = targetMonth.split("-");
       const year = parseInt(yearStr, 10) || 2026;
       const month = parseInt(monthStr, 10) || 6;
       const daysInMonth = new Date(year, month, 0).getDate();
 
-      const empName = selectedEmployee !== "ALL" ? selectedEmployee : (targetEmps[0]?.employee_name || "Sneha Mojumder");
-      meta["Employee"] = empName;
+      const chosenEmpObj = targetEmps.find(
+        e => e.name.trim().toLowerCase() === (selectedEmployee || "").trim().toLowerCase()
+      ) || targetEmps[0];
+
+      const empName = chosenEmpObj ? chosenEmpObj.name : "Employee";
+      const empCompany = chosenEmpObj ? chosenEmpObj.company : (selectedCompany !== "ALL" ? selectedCompany : "HB");
+
+      meta["Employee"] = `${empName} (${empCompany})`;
       meta["Month"] = targetMonth;
 
       const empMonthLogs = baseLogs.filter(
-        l => l.employee.trim().toLowerCase() === empName.trim().toLowerCase() && extractDateKey(l.timestamp).startsWith(targetMonth)
+        l =>
+          l.employee.trim().toLowerCase() === empName.trim().toLowerCase() &&
+          extractDateKey(l.timestamp).startsWith(targetMonth)
       );
 
       for (let d = 1; d <= daysInMonth; d++) {
@@ -321,6 +388,8 @@ export default function ReportsView({
         }
 
         repRows.push([
+          empCompany,
+          empName,
           formatToIndianDate(dateKey),
           dayOfWeek,
           status,
@@ -365,7 +434,6 @@ export default function ReportsView({
         return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
       });
 
-      // Group by company + employee + date
       const groups: Record<string, AttendanceLog[]> = {};
       rangeLogs.forEach(l => {
         const d = extractDateKey(l.timestamp);
@@ -499,6 +567,7 @@ export default function ReportsView({
     toDate,
     logs,
     availableEmployees,
+    employees,
     searchQuery
   ]);
 
@@ -689,7 +758,7 @@ export default function ReportsView({
         {/* Employee Dropdown when Single Employee Timesheet is selected */}
         {reportType === "employee_timesheet" && (
           <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-start sm:items-center gap-3">
-            <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+            <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5 flex-shrink-0">
               <User className="w-4 h-4 text-blue-600" />
               <span>Select Single Employee for Timesheet:</span>
             </span>
@@ -699,16 +768,16 @@ export default function ReportsView({
                 setSelectedEmployee(e.target.value);
                 setCurrentPage(1);
               }}
-              className="flex-1 max-w-md px-3.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+              className="flex-1 max-w-md px-3.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600 cursor-pointer"
             >
               {availableEmployees.length > 0 ? (
                 availableEmployees.map(e => (
-                  <option key={`${e.company_name}-${e.employee_name}`} value={e.employee_name}>
-                    {e.employee_name} ({e.company_name})
+                  <option key={`${e.company}-${e.name}`} value={e.name}>
+                    {e.name} ({e.company})
                   </option>
                 ))
               ) : (
-                <option value="ALL">No employees found for selected company</option>
+                <option value="">No employees found for selected company</option>
               )}
             </select>
           </div>
@@ -725,9 +794,17 @@ export default function ReportsView({
                 setSearchQuery(e.target.value);
                 setCurrentPage(1);
               }}
-              placeholder="Search employee, location, status, or record ID..."
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-600 focus:bg-white"
+              placeholder="Search employee, location, status, date, or ID..."
+              className="w-full pl-10 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-600 focus:bg-white"
             />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-3 self-end sm:self-auto">
