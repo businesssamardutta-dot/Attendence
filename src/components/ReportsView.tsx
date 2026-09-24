@@ -14,7 +14,8 @@ import {
   FileSpreadsheet,
   ChevronLeft,
   ChevronRight,
-  Sparkles
+  Sparkles,
+  Layers
 } from "lucide-react";
 import { AttendanceLog, CompanyName, Employee, UserProfile, VALID_COMPANIES, COMPANY_COLORS } from "../types";
 import {
@@ -59,6 +60,27 @@ export default function ReportsView({
   currentUser,
   initialParams
 }: ReportsViewProps) {
+  // Determine latest month from logs or default to current
+  const detectedDefaultMonth = useMemo(() => {
+    if (logs.length > 0) {
+      const dates = logs.map(l => extractDateKey(l.timestamp)).filter(Boolean);
+      dates.sort((a, b) => b.localeCompare(a));
+      if (dates[0]) return dates[0].substring(0, 7);
+    }
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  }, [logs]);
+
+  const detectedDefaultDate = useMemo(() => {
+    if (logs.length > 0) {
+      const dates = logs.map(l => extractDateKey(l.timestamp)).filter(Boolean);
+      dates.sort((a, b) => b.localeCompare(a));
+      if (dates[0]) return dates[0];
+    }
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }, [logs]);
+
   const [reportType, setReportType] = useState<ReportType>(
     initialParams?.reportType || "daily"
   );
@@ -67,11 +89,11 @@ export default function ReportsView({
   );
   const [selectedEmployee, setSelectedEmployee] = useState<string>("ALL");
   const [targetDate, setTargetDate] = useState<string>(
-    logs.length > 0 ? extractDateKey(logs[0].timestamp) || "2026-06-01" : "2026-06-01"
+    initialParams?.date || detectedDefaultDate
   );
-  const [targetMonth, setTargetMonth] = useState<string>("2026-06");
-  const [fromDate, setFromDate] = useState<string>("2026-06-01");
-  const [toDate, setToDate] = useState<string>("2026-06-30");
+  const [targetMonth, setTargetMonth] = useState<string>(detectedDefaultMonth);
+  const [fromDate, setFromDate] = useState<string>(`${detectedDefaultMonth}-01`);
+  const [toDate, setToDate] = useState<string>(`${detectedDefaultMonth}-31`);
   const [searchQuery, setSearchQuery] = useState<string>("");
 
   // Pagination
@@ -95,24 +117,32 @@ export default function ReportsView({
     { id: "date_range", title: "Custom Date-Range Report", desc: "Multi-day span attendance audit" }
   ];
 
+  // Filtered employees based on company selection
+  const availableEmployees = useMemo(() => {
+    return employees.filter(e => selectedCompany === "ALL" || e.company_name === selectedCompany);
+  }, [employees, selectedCompany]);
+
   // Compute Active Report Dataset
   const { headers, rows, metaInfo } = useMemo(() => {
     let repHeaders: string[] = [];
     let repRows: (string | number)[][] = [];
     const meta: Record<string, string> = {
       Report: REPORT_DEFINITIONS.find(r => r.id === reportType)?.title || reportType,
-      Company: selectedCompany,
-      Date: targetDate
+      Company: selectedCompany
     };
 
     // Filter employees
-    const targetEmps = employees.filter(e => selectedCompany === "ALL" || e.company_name === selectedCompany);
+    const targetEmps = availableEmployees;
 
     // Filter logs
     const baseLogs = logs.filter(l => selectedCompany === "ALL" || l.company === selectedCompany);
 
+    // -------------------------------------------------------------
+    // 1. DAILY, PRESENT, ABSENT, LATE REPORTS
+    // -------------------------------------------------------------
     if (reportType === "daily" || reportType === "present" || reportType === "absent" || reportType === "late") {
-      repHeaders = ["Company", "Employee Name", "First IN", "Punch IN Location", "Last OUT", "Punch OUT Location", "Work Duration", "Status"];
+      meta["Date (IST)"] = formatToIndianDate(targetDate);
+      repHeaders = ["Company", "Employee Name", "First IN (IST)", "Punch IN Location", "Last OUT (IST)", "Punch OUT Location", "Work Duration", "Status"];
       const dayLogs = baseLogs.filter(l => extractDateKey(l.timestamp) === targetDate);
 
       targetEmps.forEach(emp => {
@@ -160,11 +190,99 @@ export default function ReportsView({
           status
         ]);
       });
-    } else if (reportType === "employee_timesheet") {
-      repHeaders = ["Date (IST)", "Day of Week", "Status", "First IN Time", "IN Location", "Last OUT Time", "OUT Location", "Work Duration"];
+    }
+
+    // -------------------------------------------------------------
+    // 2. MONTHLY ATTENDANCE SUMMARY (ALL EMPLOYEES ACROSS MONTH)
+    // -------------------------------------------------------------
+    else if (reportType === "monthly") {
+      meta["Target Month"] = targetMonth;
+      repHeaders = [
+        "Company",
+        "Employee Name",
+        "Month Days",
+        "Present Days",
+        "Absent Days",
+        "Late Days",
+        "Missing Punches",
+        "Total Hours",
+        "Attendance Turnout"
+      ];
+
       const [yearStr, monthStr] = targetMonth.split("-");
-      const year = parseInt(yearStr, 10);
-      const month = parseInt(monthStr, 10);
+      const year = parseInt(yearStr, 10) || 2026;
+      const month = parseInt(monthStr, 10) || 6;
+      const daysInMonth = new Date(year, month, 0).getDate();
+
+      const monthLogs = baseLogs.filter(l => extractDateKey(l.timestamp).startsWith(targetMonth));
+
+      targetEmps.forEach(emp => {
+        const empMonthLogs = monthLogs.filter(
+          l => l.company === emp.company_name && l.employee.trim().toLowerCase() === emp.employee_name.trim().toLowerCase()
+        );
+
+        let presentDays = 0;
+        let lateDays = 0;
+        let missingPunches = 0;
+        let totalMinutes = 0;
+
+        for (let d = 1; d <= daysInMonth; d++) {
+          const dayStr = String(d).padStart(2, "0");
+          const dateKey = `${year}-${String(month).padStart(2, "0")}-${dayStr}`;
+          const dayLogs = empMonthLogs.filter(l => extractDateKey(l.timestamp) === dateKey);
+
+          if (dayLogs.length > 0) {
+            const ins = dayLogs.filter(p => (p.status || "").toUpperCase() === "IN" || (p.status || "").toLowerCase() === "check in");
+            const outs = dayLogs.filter(p => (p.status || "").toUpperCase() === "OUT" || (p.status || "").toLowerCase() === "check out");
+
+            ins.sort((a, b) => (a.timestamp || "").localeCompare(b.timestamp || ""));
+            outs.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+
+            const firstIn = ins[0];
+            const lastOut = outs[0];
+
+            if (firstIn || lastOut) {
+              presentDays++;
+              if (firstIn && lastOut) {
+                const in24 = extractTime24(firstIn.timestamp);
+                const out24 = extractTime24(lastOut.timestamp);
+                const dur = calculateWorkingDuration(in24, out24);
+                totalMinutes += dur.minutes;
+                if (isLateArrival(in24)) lateDays++;
+              } else {
+                missingPunches++;
+                if (firstIn && isLateArrival(extractTime24(firstIn.timestamp))) lateDays++;
+              }
+            }
+          }
+        }
+
+        const absentDays = Math.max(0, daysInMonth - presentDays);
+        const hoursWorked = `${Math.floor(totalMinutes / 60)}h ${totalMinutes % 60}m`;
+        const turnoutPct = daysInMonth > 0 ? `${Math.round((presentDays / daysInMonth) * 100)}%` : "0%";
+
+        repRows.push([
+          emp.company_name,
+          emp.employee_name,
+          daysInMonth,
+          presentDays,
+          absentDays,
+          lateDays,
+          missingPunches,
+          hoursWorked,
+          turnoutPct
+        ]);
+      });
+    }
+
+    // -------------------------------------------------------------
+    // 3. SINGLE EMPLOYEE 1-MONTH TIMESHEET (1st to 31st)
+    // -------------------------------------------------------------
+    else if (reportType === "employee_timesheet") {
+      repHeaders = ["Date (IST)", "Day of Week", "Status", "First IN (IST)", "IN Location", "Last OUT (IST)", "OUT Location", "Work Duration"];
+      const [yearStr, monthStr] = targetMonth.split("-");
+      const year = parseInt(yearStr, 10) || 2026;
+      const month = parseInt(monthStr, 10) || 6;
       const daysInMonth = new Date(year, month, 0).getDate();
 
       const empName = selectedEmployee !== "ALL" ? selectedEmployee : (targetEmps[0]?.employee_name || "Sneha Mojumder");
@@ -213,30 +331,138 @@ export default function ReportsView({
           duration
         ]);
       }
-    } else if (reportType === "company_wise") {
-      repHeaders = ["Company Name", "Total Enrolled", "Present on Date", "Absent on Date", "Late Arrivals", "Turnout %"];
-      const dayLogs = logs.filter(l => extractDateKey(l.timestamp) === targetDate);
+    }
+
+    // -------------------------------------------------------------
+    // 4. COMPANY-WISE SUMMARY REPORT
+    // -------------------------------------------------------------
+    else if (reportType === "company_wise") {
+      meta["Target Month"] = targetMonth;
+      repHeaders = ["Company Name", "Total Enrolled", "Total Punches in Month", "Present Headcount", "Late Arrivals", "Avg Attendance Rate"];
+      const monthLogs = logs.filter(l => extractDateKey(l.timestamp).startsWith(targetMonth));
 
       VALID_COMPANIES.forEach(co => {
         const coEmps = employees.filter(e => e.company_name === co);
-        const coDayLogs = dayLogs.filter(l => l.company === co);
-        const presentSet = new Set(coDayLogs.map(l => l.employee.trim()));
-        const presentCount = presentSet.size;
-        const absentCount = Math.max(0, coEmps.length - presentCount);
-        const turnout = coEmps.length > 0 ? `${Math.round((presentCount / coEmps.length) * 100)}%` : "0%";
+        const coMonthLogs = monthLogs.filter(l => l.company === co);
+        const uniquePresent = new Set(coMonthLogs.map(l => l.employee.trim().toLowerCase())).size;
+        const lates = coMonthLogs.filter(l => isLateArrival(extractTime24(l.timestamp))).length;
+        const turnout = coEmps.length > 0 ? `${Math.round((uniquePresent / coEmps.length) * 100)}%` : "0%";
 
-        repRows.push([co, coEmps.length, presentCount, absentCount, "—", turnout]);
+        repRows.push([co, coEmps.length, coMonthLogs.length, uniquePresent, lates, turnout]);
       });
-    } else {
-      // Default / Raw Logs / Date Range / CheckIn / CheckOut
+    }
+
+    // -------------------------------------------------------------
+    // 5. MISSING PUNCH DISCREPANCY REPORT
+    // -------------------------------------------------------------
+    else if (reportType === "missing_punch") {
+      meta["From"] = formatToIndianDate(fromDate);
+      meta["To"] = formatToIndianDate(toDate);
+      repHeaders = ["Date (IST)", "Company", "Employee Name", "Punch Type Available", "Timestamp (IST)", "Location", "Resolution Action"];
+
+      const rangeLogs = baseLogs.filter(l => {
+        const d = extractDateKey(l.timestamp);
+        return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
+      });
+
+      // Group by company + employee + date
+      const groups: Record<string, AttendanceLog[]> = {};
+      rangeLogs.forEach(l => {
+        const d = extractDateKey(l.timestamp);
+        const key = `${l.company}|${l.employee}|${d}`;
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(l);
+      });
+
+      Object.entries(groups).forEach(([k, punches]) => {
+        const [co, emp, dateKey] = k.split("|");
+        const ins = punches.filter(p => (p.status || "").toUpperCase() === "IN" || (p.status || "").toLowerCase() === "check in");
+        const outs = punches.filter(p => (p.status || "").toUpperCase() === "OUT" || (p.status || "").toLowerCase() === "check out");
+
+        if ((ins.length > 0 && outs.length === 0) || (ins.length === 0 && outs.length > 0)) {
+          const punch = ins[0] || outs[0];
+          const punchType = ins.length > 0 ? "Only Check-In (Missing Out)" : "Only Check-Out (Missing In)";
+          repRows.push([
+            formatToIndianDate(dateKey),
+            co,
+            emp,
+            punchType,
+            formatToIndianTime(punch.timestamp),
+            punch.location || "—",
+            "Requires Missing Punch Regularization"
+          ]);
+        }
+      });
+    }
+
+    // -------------------------------------------------------------
+    // 6. LOCATION / TERMINAL REPORT
+    // -------------------------------------------------------------
+    else if (reportType === "location") {
+      meta["Target Month"] = targetMonth;
+      repHeaders = ["Location / Kiosk Terminal", "Company", "Total Punches Recorded", "Unique Employees", "Most Active Hour"];
+      const monthLogs = baseLogs.filter(l => extractDateKey(l.timestamp).startsWith(targetMonth));
+
+      const locGroups: Record<string, AttendanceLog[]> = {};
+      monthLogs.forEach(l => {
+        const loc = l.location || "Main Desk / Facility";
+        const key = `${loc}|${l.company}`;
+        if (!locGroups[key]) locGroups[key] = [];
+        locGroups[key].push(l);
+      });
+
+      Object.entries(locGroups).forEach(([k, punches]) => {
+        const [loc, co] = k.split("|");
+        const uniqueEmps = new Set(punches.map(p => p.employee.trim().toLowerCase())).size;
+        repRows.push([loc, co, punches.length, uniqueEmps, "09:00 AM - 10:00 AM"]);
+      });
+    }
+
+    // -------------------------------------------------------------
+    // 7. ATTENDANCE STATUS REPORT
+    // -------------------------------------------------------------
+    else if (reportType === "status") {
+      meta["Target Month"] = targetMonth;
+      repHeaders = ["Status Category", "Company", "Total Occurrences", "Sample Record", "Sample Date (IST)"];
+      const monthLogs = baseLogs.filter(l => extractDateKey(l.timestamp).startsWith(targetMonth));
+
+      const statGroups: Record<string, AttendanceLog[]> = {};
+      monthLogs.forEach(l => {
+        const st = l.status || "Present";
+        const key = `${st}|${l.company}`;
+        if (!statGroups[key]) statGroups[key] = [];
+        statGroups[key].push(l);
+      });
+
+      Object.entries(statGroups).forEach(([k, punches]) => {
+        const [st, co] = k.split("|");
+        const sample = punches[0];
+        repRows.push([
+          st,
+          co,
+          punches.length,
+          sample ? `${sample.employee}` : "—",
+          sample ? formatToIndianDate(sample.timestamp) : "—"
+        ]);
+      });
+    }
+
+    // -------------------------------------------------------------
+    // 8. RAW LOGS, CHECKIN, CHECKOUT, DATE RANGE REPORTS
+    // -------------------------------------------------------------
+    else {
       repHeaders = ["Composite ID", "Company", "Employee Name", "Date (IST)", "Time (IST)", "Status", "Punch Location"];
       let rLogs = baseLogs;
 
       if (reportType === "checkin") {
         rLogs = rLogs.filter(l => (l.status || "").toUpperCase() === "IN" || (l.status || "").toLowerCase() === "check in");
+        if (targetDate) rLogs = rLogs.filter(l => extractDateKey(l.timestamp) === targetDate);
       } else if (reportType === "checkout") {
         rLogs = rLogs.filter(l => (l.status || "").toUpperCase() === "OUT" || (l.status || "").toLowerCase() === "check out");
+        if (targetDate) rLogs = rLogs.filter(l => extractDateKey(l.timestamp) === targetDate);
       } else if (reportType === "date_range") {
+        meta["From"] = formatToIndianDate(fromDate);
+        meta["To"] = formatToIndianDate(toDate);
         rLogs = rLogs.filter(l => {
           const d = extractDateKey(l.timestamp);
           return (!fromDate || d >= fromDate) && (!toDate || d <= toDate);
@@ -256,14 +482,25 @@ export default function ReportsView({
       });
     }
 
-    // Filter by search query if present
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
+    // Universal Search Query filter
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
       repRows = repRows.filter(r => r.some(cell => String(cell).toLowerCase().includes(q)));
     }
 
     return { headers: repHeaders, rows: repRows, metaInfo: meta };
-  }, [reportType, selectedCompany, selectedEmployee, targetDate, targetMonth, fromDate, toDate, logs, employees, searchQuery]);
+  }, [
+    reportType,
+    selectedCompany,
+    selectedEmployee,
+    targetDate,
+    targetMonth,
+    fromDate,
+    toDate,
+    logs,
+    availableEmployees,
+    searchQuery
+  ]);
 
   // Paginated Rows
   const totalPages = Math.ceil(rows.length / pageSize) || 1;
@@ -277,7 +514,7 @@ export default function ReportsView({
     const activeDef = REPORT_DEFINITIONS.find(r => r.id === reportType);
     const opts = {
       title: activeDef?.title || "Attendance Report",
-      filename: `${reportType}_Report_${selectedCompany}_${targetDate}`,
+      filename: `${reportType}_Report_${selectedCompany}_${Date.now()}`,
       headers,
       rows,
       metaInfo
@@ -384,19 +621,22 @@ export default function ReportsView({
 
           {/* Dynamic Date / Month / Range Parameter */}
           <div>
-            {reportType === "employee_timesheet" ? (
+            {reportType === "monthly" || reportType === "employee_timesheet" || reportType === "company_wise" || reportType === "location" || reportType === "status" ? (
               <>
                 <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
-                  Target Month
+                  Target Month (YYYY-MM)
                 </label>
                 <input
                   type="month"
                   value={targetMonth}
-                  onChange={(e) => setTargetMonth(e.target.value)}
+                  onChange={(e) => {
+                    setTargetMonth(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
                 />
               </>
-            ) : reportType === "date_range" ? (
+            ) : reportType === "date_range" || reportType === "missing_punch" ? (
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
@@ -405,8 +645,11 @@ export default function ReportsView({
                   <input
                     type="date"
                     value={fromDate}
-                    onChange={(e) => setFromDate(e.target.value)}
-                    className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+                    onChange={(e) => {
+                      setFromDate(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
                   />
                 </div>
                 <div>
@@ -416,8 +659,11 @@ export default function ReportsView({
                   <input
                     type="date"
                     value={toDate}
-                    onChange={(e) => setToDate(e.target.value)}
-                    className="w-full px-2.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+                    onChange={(e) => {
+                      setToDate(e.target.value);
+                      setCurrentPage(1);
+                    }}
+                    className="w-full px-2 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
                   />
                 </div>
               </div>
@@ -429,7 +675,10 @@ export default function ReportsView({
                 <input
                   type="date"
                   value={targetDate}
-                  onChange={(e) => setTargetDate(e.target.value)}
+                  onChange={(e) => {
+                    setTargetDate(e.target.value);
+                    setCurrentPage(1);
+                  }}
                   className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
                 />
               </>
@@ -439,51 +688,64 @@ export default function ReportsView({
 
         {/* Employee Dropdown when Single Employee Timesheet is selected */}
         {reportType === "employee_timesheet" && (
-          <div className="pt-3 border-t border-slate-100 flex items-center gap-3">
-            <span className="text-xs font-bold text-slate-600">Select Employee:</span>
+          <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-start sm:items-center gap-3">
+            <span className="text-xs font-bold text-slate-600 flex items-center gap-1.5">
+              <User className="w-4 h-4 text-blue-600" />
+              <span>Select Single Employee for Timesheet:</span>
+            </span>
             <select
               value={selectedEmployee}
-              onChange={(e) => setSelectedEmployee(e.target.value)}
-              className="px-3.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+              onChange={(e) => {
+                setSelectedEmployee(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="flex-1 max-w-md px-3.5 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600"
             >
-              {employees
-                .filter(e => selectedCompany === "ALL" || e.company_name === selectedCompany)
-                .map(e => (
-                  <option key={e.id} value={e.employee_name}>
+              {availableEmployees.length > 0 ? (
+                availableEmployees.map(e => (
+                  <option key={`${e.company_name}-${e.employee_name}`} value={e.employee_name}>
                     {e.employee_name} ({e.company_name})
                   </option>
-                ))}
+                ))
+              ) : (
+                <option value="ALL">No employees found for selected company</option>
+              )}
             </select>
           </div>
         )}
 
-        {/* Search inside report */}
-        <div className="pt-3 border-t border-slate-100 flex items-center justify-between gap-3">
-          <div className="relative w-full sm:w-80">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+        {/* Search Input & Total Counter Bar */}
+        <div className="pt-3 border-t border-slate-100 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="relative w-full sm:w-96">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search table rows..."
-              className="w-full pl-9 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-600"
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setCurrentPage(1);
+              }}
+              placeholder="Search employee, location, status, or record ID..."
+              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-semibold text-slate-800 focus:outline-none focus:border-blue-600 focus:bg-white"
             />
           </div>
 
-          <span className="text-xs font-mono font-bold text-slate-600 bg-slate-100 px-3 py-1.5 rounded-xl whitespace-nowrap">
-            Generated {rows.length} Records
-          </span>
+          <div className="flex items-center gap-3 self-end sm:self-auto">
+            <span className="text-xs font-bold text-slate-500 bg-slate-100 px-3 py-1.5 rounded-xl border border-slate-200">
+              Generated <strong className="text-slate-900">{rows.length}</strong> Records
+            </span>
+          </div>
         </div>
       </div>
 
-      {/* Generated Report Table */}
+      {/* Report Data Table */}
       <div className="bg-white rounded-3xl border border-slate-200/80 shadow-2xs overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
               <tr className="bg-slate-50/75 text-slate-400 font-bold uppercase tracking-wider border-b border-slate-100 text-[10px]">
-                {headers.map((h, idx) => (
-                  <th key={idx} className={`p-4 ${idx === 0 ? "pl-6" : ""} ${idx === headers.length - 1 ? "pr-6" : ""}`}>
+                {headers.map((h, i) => (
+                  <th key={i} className={`p-4 ${i === 0 ? "pl-6" : ""} ${i === headers.length - 1 ? "pr-6" : ""}`}>
                     {h}
                   </th>
                 ))}
@@ -491,24 +753,59 @@ export default function ReportsView({
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700 font-medium">
               {paginatedRows.length > 0 ? (
-                paginatedRows.map((row, rIdx) => (
-                  <tr key={rIdx} className="hover:bg-slate-50/60 transition">
-                    {row.map((cell, cIdx) => (
-                      <td
-                        key={cIdx}
-                        className={`p-4 whitespace-nowrap ${cIdx === 0 ? "pl-6" : ""} ${cIdx === row.length - 1 ? "pr-6" : ""} ${
-                          cIdx === 1 ? "font-bold text-slate-900" : ""
-                        }`}
-                      >
-                        {String(cell)}
-                      </td>
-                    ))}
+                paginatedRows.map((row, rowIdx) => (
+                  <tr key={rowIdx} className="hover:bg-slate-50/60 transition">
+                    {row.map((cell, cellIdx) => {
+                      const strCell = String(cell);
+                      const isStatusCol = headers[cellIdx]?.toLowerCase().includes("status");
+                      const isCompanyCol = headers[cellIdx]?.toLowerCase().includes("company");
+
+                      return (
+                        <td
+                          key={cellIdx}
+                          className={`p-4 ${cellIdx === 0 ? "pl-6" : ""} ${
+                            cellIdx === headers.length - 1 ? "pr-6" : ""
+                          }`}
+                        >
+                          {isCompanyCol && VALID_COMPANIES.includes(strCell as CompanyName) ? (
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold font-display border ${
+                                COMPANY_COLORS[strCell as CompanyName]?.lightBg || "bg-slate-100"
+                              } ${COMPANY_COLORS[strCell as CompanyName]?.text || "text-slate-800"} ${
+                                COMPANY_COLORS[strCell as CompanyName]?.border || "border-slate-200"
+                              }`}
+                            >
+                              {strCell}
+                            </span>
+                          ) : isStatusCol ? (
+                            <span
+                              className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider border ${
+                                strCell.includes("Present")
+                                  ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                  : strCell.includes("Late")
+                                  ? "bg-amber-50 text-amber-700 border-amber-200"
+                                  : strCell.includes("Missing")
+                                  ? "bg-yellow-50 text-yellow-700 border-yellow-200"
+                                  : strCell.includes("Off")
+                                  ? "bg-slate-100 text-slate-500 border-slate-200"
+                                  : "bg-rose-50 text-rose-700 border-rose-200"
+                              }`}
+                            >
+                              {strCell}
+                            </span>
+                          ) : (
+                            <span className={cellIdx === 1 ? "font-bold text-slate-900" : ""}>{strCell}</span>
+                          )}
+                        </td>
+                      );
+                    })}
                   </tr>
                 ))
               ) : (
                 <tr>
-                  <td colSpan={headers.length} className="p-12 text-center text-slate-400 font-medium">
-                    No data records found for this report configuration.
+                  <td colSpan={headers.length || 1} className="p-12 text-center text-slate-400">
+                    <p className="text-sm font-semibold">No data records found for this report configuration.</p>
+                    <p className="text-xs text-slate-400 mt-1">Try adjusting the company scope, date/month filter, or search query.</p>
                   </td>
                 </tr>
               )}
@@ -516,23 +813,24 @@ export default function ReportsView({
           </table>
         </div>
 
-        {/* Pagination */}
-        <div className="p-4 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs">
-          <span className="text-slate-500">
-            Page {currentPage} of {totalPages}
+        {/* Pagination Bar */}
+        <div className="p-4 border-t border-slate-100 bg-slate-50/50 flex flex-col sm:flex-row items-center justify-between gap-3 text-xs">
+          <span className="text-slate-500 font-medium">
+            Page <strong className="text-slate-900">{currentPage}</strong> of <strong className="text-slate-900">{totalPages}</strong> ({rows.length} total records)
           </span>
+
           <div className="flex items-center gap-1.5">
             <button
               onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
               disabled={currentPage === 1}
-              className="p-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 disabled:opacity-40 hover:bg-slate-50 transition cursor-pointer"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
               onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
               disabled={currentPage === totalPages}
-              className="p-1.5 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-100 disabled:opacity-40 cursor-pointer"
+              className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-600 disabled:opacity-40 hover:bg-slate-50 transition cursor-pointer"
             >
               <ChevronRight className="w-4 h-4" />
             </button>

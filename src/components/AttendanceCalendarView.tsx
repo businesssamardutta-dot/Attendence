@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
 import {
   CalendarDays,
   ChevronLeft,
@@ -11,7 +11,8 @@ import {
   User,
   Download,
   Printer,
-  X
+  X,
+  Search
 } from "lucide-react";
 import { AttendanceLog, CompanyName, Employee, UserProfile, VALID_COMPANIES, COMPANY_COLORS } from "../types";
 import {
@@ -44,18 +45,33 @@ export default function AttendanceCalendarView({
       : "HB"
   );
 
-  // Available employees for selected company
+  // Sync when global company changes in navbar
+  useEffect(() => {
+    if (selectedGlobalCompany && VALID_COMPANIES.includes(selectedGlobalCompany as CompanyName)) {
+      setSelectedCompany(selectedGlobalCompany as CompanyName);
+    }
+  }, [selectedGlobalCompany]);
+
+  // Available employees for selected company (combining employee_master + any active in logs)
   const companyEmployees = useMemo(() => {
-    return employees.filter(e => e.company_name === selectedCompany);
-  }, [employees, selectedCompany]);
+    const list: Employee[] = employees.filter(e => e.company_name === selectedCompany);
+    const logEmps = Array.from(new Set(logs.filter(l => l.company === selectedCompany).map(l => l.employee.trim())));
+    logEmps.forEach(empName => {
+      if (!list.some(e => e.employee_name.trim().toLowerCase() === empName.toLowerCase())) {
+        list.push({ id: 0, company_name: selectedCompany, employee_name: empName });
+      }
+    });
+    return list.sort((a, b) => a.employee_name.localeCompare(b.employee_name));
+  }, [employees, logs, selectedCompany]);
 
-  const [selectedEmployee, setSelectedEmployee] = useState<string>(
-    currentUser?.role === "Employee" && currentUser.employeeName
-      ? currentUser.employeeName
-      : "Sneha Mojumder"
-  );
+  const [selectedEmployee, setSelectedEmployee] = useState<string>(() => {
+    if (currentUser?.role === "Employee" && currentUser.employeeName) {
+      return currentUser.employeeName;
+    }
+    return companyEmployees[0]?.employee_name || "Sneha Mojumder";
+  });
 
-  // Determine current month or default to latest log month (e.g. June 2026 or current)
+  // Determine default month from available logs or current month
   const defaultMonth = useMemo(() => {
     if (logs.length > 0) {
       const dates = logs.map(l => extractDateKey(l.timestamp)).filter(Boolean);
@@ -64,17 +80,18 @@ export default function AttendanceCalendarView({
         return dates[0].substring(0, 7); // YYYY-MM
       }
     }
-    return "2026-06";
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }, [logs]);
 
   const [selectedMonth, setSelectedMonth] = useState<string>(defaultMonth);
   const [selectedDayDetails, setSelectedDayDetails] = useState<any | null>(null);
 
   // Sync employee dropdown when company changes
-  React.useEffect(() => {
+  useEffect(() => {
     if (currentUser?.role === "Employee" && currentUser.employeeName) {
       setSelectedEmployee(currentUser.employeeName);
-    } else if (companyEmployees.length > 0 && !companyEmployees.some(e => e.employee_name === selectedEmployee)) {
+    } else if (companyEmployees.length > 0 && !companyEmployees.some(e => e.employee_name.toLowerCase() === selectedEmployee.toLowerCase())) {
       setSelectedEmployee(companyEmployees[0].employee_name);
     }
   }, [selectedCompany, companyEmployees, currentUser, selectedEmployee]);
@@ -84,8 +101,8 @@ export default function AttendanceCalendarView({
     if (!selectedMonth || !selectedEmployee) return { days: [], summary: {} };
 
     const [yearStr, monthStr] = selectedMonth.split("-");
-    const year = parseInt(yearStr, 10);
-    const month = parseInt(monthStr, 10); // 1 to 12
+    const year = parseInt(yearStr, 10) || 2026;
+    const month = parseInt(monthStr, 10) || 6; // 1 to 12
 
     const daysInMonth = new Date(year, month, 0).getDate();
 
@@ -139,7 +156,7 @@ export default function AttendanceCalendarView({
         totalMinutes += dur.minutes;
 
         if (isLateArrival(inTime24)) {
-          status = "Late";
+          status = "Late Arrival";
           statusColor = "bg-amber-50 border-amber-200 text-amber-800";
           lateDays++;
           presentDays++;
@@ -198,7 +215,7 @@ export default function AttendanceCalendarView({
 
   // Export handlers
   const handleExport = (type: "excel" | "csv" | "pdf" | "print") => {
-    const headers = ["Date", "Day", "Status", "First Punch IN", "Punch IN Location", "Last Punch OUT", "Punch OUT Location", "Work Duration"];
+    const headers = ["Date (IST)", "Day", "Status", "First Punch IN", "Punch IN Location", "Last Punch OUT", "Punch OUT Location", "Work Duration"];
     const rows = (monthData.days || []).map(d => [
       d.formattedDate,
       d.dayOfWeek,
@@ -248,261 +265,238 @@ export default function AttendanceCalendarView({
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => handleExport("excel")}
-            className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Excel</span>
+            <span>Excel (.xlsx)</span>
           </button>
           <button
             onClick={() => handleExport("csv")}
-            className="px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5" />
             <span>CSV</span>
           </button>
           <button
             onClick={() => handleExport("pdf")}
-            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             <Download className="w-3.5 h-3.5" />
             <span>PDF</span>
           </button>
           <button
             onClick={() => handleExport("print")}
-            className="px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+            className="px-3 py-2 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-2xs"
           >
             <Printer className="w-3.5 h-3.5" />
-            <span>Print</span>
+            <span>Print View</span>
           </button>
         </div>
       </div>
 
-      {/* Control Bar */}
-      <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-2xs grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* Control Filters Bar */}
+      <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-2xs grid grid-cols-1 md:grid-cols-3 gap-4">
         {/* Company Dropdown */}
         <div>
-          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
-            Company Entity
+          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
+            Company
           </label>
-          <div className="relative">
-            <Building2 className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <select
-              value={selectedCompany}
-              onChange={(e) => setSelectedCompany(e.target.value as CompanyName)}
-              disabled={currentUser?.role === "Employee"}
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white cursor-pointer"
-            >
-              {VALID_COMPANIES.map(co => (
-                <option key={co} value={co}>
-                  {co}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            value={selectedCompany}
+            onChange={(e) => setSelectedCompany(e.target.value as CompanyName)}
+            disabled={currentUser?.role === "Employee"}
+            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white cursor-pointer disabled:opacity-60"
+          >
+            {VALID_COMPANIES.map(co => (
+              <option key={co} value={co}>
+                {co}
+              </option>
+            ))}
+          </select>
         </div>
 
         {/* Employee Dropdown */}
         <div>
-          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
-            Selected Employee
+          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
+            Employee ({companyEmployees.length} Available)
           </label>
-          <div className="relative">
-            <User className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <select
-              value={selectedEmployee}
-              onChange={(e) => setSelectedEmployee(e.target.value)}
-              disabled={currentUser?.role === "Employee"}
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white cursor-pointer"
-            >
-              {companyEmployees.map(emp => (
-                <option key={emp.id} value={emp.employee_name}>
-                  {emp.employee_name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <select
+            value={selectedEmployee}
+            onChange={(e) => setSelectedEmployee(e.target.value)}
+            disabled={currentUser?.role === "Employee"}
+            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white cursor-pointer disabled:opacity-60"
+          >
+            {companyEmployees.map(emp => (
+              <option key={`${emp.company_name}-${emp.employee_name}`} value={emp.employee_name}>
+                {emp.employee_name}
+              </option>
+            ))}
+          </select>
         </div>
 
-        {/* Target Month Picker */}
+        {/* Month Selector */}
         <div>
-          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1.5">
-            Timesheet Month
+          <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
+            Timesheet Month (YYYY-MM)
           </label>
-          <div className="relative">
-            <CalendarDays className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-            <input
-              type="month"
-              value={selectedMonth}
-              onChange={(e) => setSelectedMonth(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
-            />
-          </div>
+          <input
+            type="month"
+            value={selectedMonth}
+            onChange={(e) => setSelectedMonth(e.target.value)}
+            className="w-full px-3.5 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600 focus:bg-white"
+          />
         </div>
       </div>
 
-      {/* Monthly Summary Statistics Cards */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3.5">
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+      {/* Month Metrics Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+        <div className="bg-white p-3.5 rounded-2xl border border-slate-200/80 shadow-2xs">
+          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Month Days</span>
+          <p className="text-lg font-black font-display text-slate-900 mt-0.5">{monthData.summary?.daysInMonth || 0}</p>
+        </div>
+
+        <div className="bg-white p-3.5 rounded-2xl border border-emerald-200/80 bg-emerald-50/20 shadow-2xs">
           <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider block">Present Days</span>
-          <div className="text-2xl font-black text-emerald-600 font-display mt-1">
-            {monthData.summary?.presentDays || 0}
-          </div>
-          <span className="text-[10px] text-slate-400">Total days clocked in</span>
+          <p className="text-lg font-black font-display text-emerald-700 mt-0.5">{monthData.summary?.presentDays || 0}</p>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-          <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">Late Marks</span>
-          <div className="text-2xl font-black text-amber-600 font-display mt-1">
-            {monthData.summary?.lateDays || 0}
-          </div>
-          <span className="text-[10px] text-amber-600">Arrivals after 09:30 AM</span>
+        <div className="bg-white p-3.5 rounded-2xl border border-amber-200/80 bg-amber-50/20 shadow-2xs">
+          <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider block">Late Arrivals</span>
+          <p className="text-lg font-black font-display text-amber-700 mt-0.5">{monthData.summary?.lateDays || 0}</p>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-          <span className="text-[10px] font-bold text-yellow-700 uppercase tracking-wider block">Missing Punches</span>
-          <div className="text-2xl font-black text-yellow-700 font-display mt-1">
-            {monthData.summary?.missingPunchDays || 0}
-          </div>
-          <span className="text-[10px] text-slate-400">Single punch recorded</span>
+        <div className="bg-white p-3.5 rounded-2xl border border-yellow-200/80 bg-yellow-50/20 shadow-2xs">
+          <span className="text-[10px] font-bold text-yellow-600 uppercase tracking-wider block">Missing Punches</span>
+          <p className="text-lg font-black font-display text-yellow-700 mt-0.5">{monthData.summary?.missingPunchDays || 0}</p>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
+        <div className="bg-white p-3.5 rounded-2xl border border-rose-200/80 bg-rose-50/20 shadow-2xs">
           <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider block">Absent Days</span>
-          <div className="text-2xl font-black text-rose-600 font-display mt-1">
-            {monthData.summary?.absentDays || 0}
-          </div>
-          <span className="text-[10px] text-slate-400">No punch on working days</span>
+          <p className="text-lg font-black font-display text-rose-700 mt-0.5">{monthData.summary?.absentDays || 0}</p>
         </div>
 
-        <div className="bg-white p-4 rounded-2xl border border-slate-200/80 shadow-2xs">
-          <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">Total Work Hours</span>
-          <div className="text-2xl font-black text-blue-600 font-display mt-1">
-            {monthData.summary?.totalHoursStr || "0h 0m"}
-          </div>
-          <span className="text-[10px] text-slate-400">Recorded logged duration</span>
+        <div className="bg-white p-3.5 rounded-2xl border border-blue-200/80 bg-blue-50/20 shadow-2xs">
+          <span className="text-[10px] font-bold text-blue-600 uppercase tracking-wider block">Hours Worked</span>
+          <p className="text-lg font-black font-display text-blue-700 mt-0.5">{monthData.summary?.totalHoursStr || "0h 0m"}</p>
         </div>
       </div>
 
-      {/* Calendar Grid */}
-      <div className="bg-white rounded-3xl border border-slate-200/80 shadow-2xs p-6">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="font-black text-slate-900 text-base font-display">
-            Timesheet Calendar: {selectedEmployee}
-          </h3>
-          <div className="flex items-center gap-2 text-[11px] font-bold">
-            <span className="flex items-center gap-1 text-emerald-700"><span className="w-2 h-2 rounded-full bg-emerald-500" /> Present</span>
-            <span className="flex items-center gap-1 text-amber-700"><span className="w-2 h-2 rounded-full bg-amber-500" /> Late</span>
-            <span className="flex items-center gap-1 text-yellow-800"><span className="w-2 h-2 rounded-full bg-yellow-500" /> Missing</span>
-            <span className="flex items-center gap-1 text-rose-700"><span className="w-2 h-2 rounded-full bg-rose-500" /> Absent</span>
-            <span className="flex items-center gap-1 text-slate-500"><span className="w-2 h-2 rounded-full bg-slate-400" /> Off</span>
-          </div>
-        </div>
+      {/* Calendar Grid (Days 1 to 31) */}
+      <div className="bg-white p-5 rounded-3xl border border-slate-200/80 shadow-2xs">
+        <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3">
+          Daily Attendance Matrix ({selectedMonth})
+        </h3>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
           {monthData.days.map((day) => (
             <div
               key={day.dateKey}
               onClick={() => setSelectedDayDetails(day)}
-              className={`p-3 rounded-2xl border transition-all cursor-pointer hover:shadow-md hover:scale-[1.02] flex flex-col justify-between ${day.statusColor}`}
+              className={`p-3 rounded-2xl border transition cursor-pointer hover:shadow-md flex flex-col justify-between min-h-[120px] ${
+                day.statusColor
+              }`}
             >
-              <div className="flex items-center justify-between">
-                <span className="font-extrabold text-sm font-mono">{day.dayNumber}</span>
-                <span className="text-[10px] font-bold uppercase">{day.dayOfWeek.substring(0, 3)}</span>
+              <div>
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-black font-display">{day.dayNumber}</span>
+                  <span className="text-[10px] font-bold opacity-75">{day.dayOfWeek.substring(0, 3)}</span>
+                </div>
+
+                <div className="mt-2 text-[10px] font-extrabold uppercase tracking-wide">
+                  {day.status}
+                </div>
               </div>
 
-              <div className="my-2 space-y-1">
-                <span className="text-[9px] font-black uppercase tracking-wider block">
-                  {day.status}
-                </span>
-
+              <div className="mt-2 pt-2 border-t border-black/5 text-[9px] font-medium space-y-0.5">
                 {day.firstIn !== "—" && (
-                  <div className="text-[10px] font-mono leading-tight">
-                    <span className="font-bold text-slate-900">IN:</span> {day.firstIn}
+                  <div className="flex items-center justify-between">
+                    <span className="opacity-75">IN:</span>
+                    <span className="font-bold">{day.firstIn}</span>
                   </div>
                 )}
                 {day.lastOut !== "—" && (
-                  <div className="text-[10px] font-mono leading-tight">
-                    <span className="font-bold text-slate-900">OUT:</span> {day.lastOut}
+                  <div className="flex items-center justify-between">
+                    <span className="opacity-75">OUT:</span>
+                    <span className="font-bold">{day.lastOut}</span>
                   </div>
                 )}
-              </div>
-
-              <div className="text-[10px] font-mono font-bold text-slate-700 border-t border-black/5 pt-1">
-                {day.durationText !== "—" ? day.durationText : ""}
+                {day.durationText !== "—" && (
+                  <div className="flex items-center justify-between text-blue-800 font-bold">
+                    <span>Dur:</span>
+                    <span>{day.durationText}</span>
+                  </div>
+                )}
               </div>
             </div>
           ))}
         </div>
       </div>
 
-      {/* DAY BREAKDOWN MODAL */}
+      {/* Day Details Modal */}
       {selectedDayDetails && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fade-in">
-          <div className="bg-white rounded-3xl max-w-lg w-full shadow-2xl border border-slate-100 overflow-hidden text-left">
-            <div className="p-6 bg-slate-900 text-white flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl p-6 w-full max-w-md shadow-2xl border border-slate-200">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div>
-                <span className="text-[10px] font-bold text-blue-400 uppercase tracking-widest">Day Attendance Breakdown</span>
-                <h3 className="font-extrabold text-lg font-display text-white">
+                <h3 className="text-base font-black font-display text-slate-900">
                   {selectedDayDetails.formattedDate} ({selectedDayDetails.dayOfWeek})
                 </h3>
-                <p className="text-xs text-slate-300 mt-0.5">
-                  {selectedEmployee} • <span className="font-bold text-blue-400">{selectedCompany}</span>
+                <p className="text-xs text-slate-500 font-semibold mt-0.5">
+                  {selectedEmployee} • {selectedCompany}
                 </p>
               </div>
-              <button onClick={() => setSelectedDayDetails(null)} className="text-slate-400 hover:text-white cursor-pointer">
+              <button
+                onClick={() => setSelectedDayDetails(null)}
+                className="p-1 rounded-xl text-slate-400 hover:text-slate-600 hover:bg-slate-100 transition"
+              >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-6 space-y-4">
-              <div className="grid grid-cols-2 gap-3 bg-slate-50 p-4 rounded-2xl border border-slate-200/70 text-xs">
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">First Punch IN</span>
-                  <span className="font-mono font-bold text-emerald-700 text-sm">{selectedDayDetails.firstIn}</span>
-                  <p className="text-slate-500 text-[11px] truncate">{selectedDayDetails.firstInLocation}</p>
-                </div>
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-bold">Last Punch OUT</span>
-                  <span className="font-mono font-bold text-rose-700 text-sm">{selectedDayDetails.lastOut}</span>
-                  <p className="text-slate-500 text-[11px] truncate">{selectedDayDetails.lastOutLocation}</p>
-                </div>
-              </div>
-
-              <div>
-                <span className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-2">
-                  All Punches Recorded ({selectedDayDetails.dayPunches?.length || 0})
+            <div className="py-4 space-y-3 text-xs">
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                <span className="text-slate-500 font-bold">Daily Status:</span>
+                <span className={`px-2.5 py-0.5 rounded-full font-bold uppercase text-[10px] ${selectedDayDetails.statusColor}`}>
+                  {selectedDayDetails.status}
                 </span>
-                <div className="space-y-2 max-h-48 overflow-y-auto custom-scrollbar">
-                  {selectedDayDetails.dayPunches && selectedDayDetails.dayPunches.length > 0 ? (
-                    selectedDayDetails.dayPunches.map((punch: AttendanceLog, idx: number) => (
-                      <div key={idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl flex items-center justify-between text-xs">
-                        <div className="flex items-center gap-2">
-                          <span className="font-mono font-bold text-slate-900">{formatToIndianTime(punch.timestamp)}</span>
-                          <span className="px-2 py-0.5 rounded font-black text-[9px] bg-blue-100 text-blue-800 uppercase">
-                            {punch.status}
-                          </span>
-                        </div>
-                        <span className="text-slate-500 truncate max-w-[180px]">{punch.location}</span>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="p-4 text-center text-slate-400 text-xs font-medium">
-                      No physical biometric punches logged for this date.
-                    </div>
-                  )}
-                </div>
               </div>
 
-              <div className="flex items-center justify-end pt-2">
-                <button
-                  type="button"
-                  onClick={() => setSelectedDayDetails(null)}
-                  className="px-5 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold transition cursor-pointer"
-                >
-                  Close
-                </button>
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                <span className="text-slate-500 font-bold">First IN Punch:</span>
+                <span className="font-bold text-slate-900">{selectedDayDetails.firstIn}</span>
+              </div>
+
+              {selectedDayDetails.firstInLocation !== "—" && (
+                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                  <span className="text-slate-500 font-bold block mb-0.5">IN Location:</span>
+                  <span className="text-slate-800 text-[11px] font-medium">{selectedDayDetails.firstInLocation}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                <span className="text-slate-500 font-bold">Last OUT Punch:</span>
+                <span className="font-bold text-slate-900">{selectedDayDetails.lastOut}</span>
+              </div>
+
+              {selectedDayDetails.lastOutLocation !== "—" && (
+                <div className="p-3 rounded-2xl bg-slate-50 border border-slate-200">
+                  <span className="text-slate-500 font-bold block mb-0.5">OUT Location:</span>
+                  <span className="text-slate-800 text-[11px] font-medium">{selectedDayDetails.lastOutLocation}</span>
+                </div>
+              )}
+
+              <div className="flex items-center justify-between p-3 rounded-2xl bg-blue-50 border border-blue-200">
+                <span className="text-blue-700 font-bold">Total Work Duration:</span>
+                <span className="font-extrabold text-blue-900">{selectedDayDetails.durationText}</span>
               </div>
             </div>
+
+            <button
+              onClick={() => setSelectedDayDetails(null)}
+              className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition cursor-pointer"
+            >
+              Close
+            </button>
           </div>
         </div>
       )}

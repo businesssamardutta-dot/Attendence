@@ -188,7 +188,7 @@ export async function fetchAllAttendanceLogs(): Promise<AttendanceLog[]> {
       .from("all_attendance_logs")
       .select("*")
       .order("timestamp", { ascending: false })
-      .limit(6000);
+      .limit(25000);
 
     if (!viewError && viewData && viewData.length > 0) {
       return viewData
@@ -210,7 +210,7 @@ export async function fetchAllAttendanceLogs(): Promise<AttendanceLog[]> {
         .from(co)
         .select("*")
         .order("timestamp", { ascending: false })
-        .limit(3000);
+        .limit(10000);
 
       if (error) {
         console.warn(`Query for table ${co} error:`, error.message);

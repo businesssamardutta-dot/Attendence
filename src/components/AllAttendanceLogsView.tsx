@@ -21,7 +21,7 @@ import {
 import { AttendanceLog, CompanyName, Employee, UserProfile, VALID_COMPANIES, COMPANY_COLORS } from "../types";
 import { updateAttendanceRecordInDB, deleteAttendanceRecordFromDB } from "../lib/supabaseClient";
 import { exportToCSV, exportToExcel, exportToPDF, triggerPrintReport } from "../lib/exportUtils";
-import { formatToIndianDate, formatToIndianTime, formatToIndianDateTime } from "../lib/dateUtils";
+import { formatToIndianDate, formatToIndianTime, formatToIndianDateTime, extractDateKey } from "../lib/dateUtils";
 import { logAuditEvent } from "../lib/auditStore";
 import { canEditAttendance, canDeleteAttendance } from "../lib/authStore";
 
@@ -94,9 +94,9 @@ export default function AllAttendanceLogsView({
         (log.location || "").toLowerCase().includes(q) ||
         (log.compositeId || "").toLowerCase().includes(q);
 
-      // Date range filter
+      // Date range filter using normalized ISO date key
       let matchDate = true;
-      const logDate = (log.timestamp || "").split(" ")[0];
+      const logDate = extractDateKey(log.timestamp);
       if (fromDate && logDate < fromDate) matchDate = false;
       if (toDate && logDate > toDate) matchDate = false;
 

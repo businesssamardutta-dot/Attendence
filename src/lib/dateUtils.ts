@@ -22,29 +22,59 @@ export function formatMonthToISO(date: Date = new Date()): string {
   return `${y}-${m}`;
 }
 
-// Convert YYYY-MM-DD or full timestamp to DD-MM-YYYY
-export function formatToIndianDate(dateStr?: string): string {
-  if (!dateStr || dateStr === "—") return "—";
-  const clean = dateStr.trim().split("T")[0].split(" ")[0];
-  const parts = clean.split("-");
-  if (parts.length === 3) {
-    if (parts[0].length === 4) {
-      // YYYY-MM-DD -> DD-MM-YYYY
-      return `${parts[2]}-${parts[1]}-${parts[0]}`;
-    } else if (parts[2].length === 4) {
-      // DD-MM-YYYY already
-      return `${parts[0].padStart(2, "0")}-${parts[1].padStart(2, "0")}-${parts[2]}`;
-    }
-  }
-  return dateStr;
-}
-
-// Parse timestamp string into YYYY-MM-DD date key
+// Robust ISO Date Key extractor: returns YYYY-MM-DD regardless of input format
 export function extractDateKey(timestamp?: string): string {
   if (!timestamp) return "";
   const cleaned = timestamp.replace("T", " ").trim();
-  const parts = cleaned.split(" ");
-  return parts[0] || "";
+  const rawDate = cleaned.split(" ")[0] || "";
+
+  // If already in YYYY-MM-DD
+  if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(rawDate)) {
+    const [y, m, d] = rawDate.split("-");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // If in DD-MM-YYYY
+  if (/^\d{1,2}-\d{1,2}-\d{4}$/.test(rawDate)) {
+    const [d, m, y] = rawDate.split("-");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // If in DD/MM/YYYY
+  if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(rawDate)) {
+    const [d, m, y] = rawDate.split("/");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // If in YYYY/MM/DD
+  if (/^\d{4}\/\d{1,2}\/\d{1,2}$/.test(rawDate)) {
+    const [y, m, d] = rawDate.split("/");
+    return `${y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+  }
+
+  // Fallback try Date parsing
+  try {
+    const d = new Date(timestamp);
+    if (!isNaN(d.getTime())) {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    }
+  } catch {}
+
+  return rawDate;
+}
+
+// Convert any date or timestamp string to Indian Standard Date: DD-MM-YYYY
+export function formatToIndianDate(dateStr?: string): string {
+  if (!dateStr || dateStr === "—") return "—";
+  const isoKey = extractDateKey(dateStr);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(isoKey)) {
+    const [y, m, d] = isoKey.split("-");
+    return `${d}-${m}-${y}`;
+  }
+  return dateStr;
 }
 
 // Parse timestamp string into 24-hour HH:mm:ss
@@ -52,30 +82,44 @@ export function extractTime24(timestamp?: string): string {
   if (!timestamp) return "";
   const cleaned = timestamp.replace("T", " ").trim();
   const parts = cleaned.split(" ");
+  let timeChunk = "";
+  
   if (parts.length > 1) {
-    return parts[1].substring(0, 8);
+    timeChunk = parts.slice(1).join(" ");
+  } else if (cleaned.includes(":")) {
+    timeChunk = cleaned;
   }
-  return "";
+
+  if (!timeChunk) return "";
+
+  // Check if AM/PM format (e.g. 09:30:00 AM or 9:30 AM)
+  const isPM = timeChunk.toUpperCase().includes("PM");
+  const isAM = timeChunk.toUpperCase().includes("AM");
+  
+  const rawNums = timeChunk.replace(/AM|PM|am|pm/g, "").trim();
+  const chunks = rawNums.split(":");
+  if (chunks.length >= 2) {
+    let hours = parseInt(chunks[0], 10) || 0;
+    const minutes = String(parseInt(chunks[1], 10) || 0).padStart(2, "0");
+    const seconds = chunks[2] ? String(parseInt(chunks[2].split(".")[0], 10) || 0).padStart(2, "0") : "00";
+
+    if (isPM && hours < 12) hours += 12;
+    if (isAM && hours === 12) hours = 0;
+
+    return `${String(hours).padStart(2, "0")}:${minutes}:${seconds}`;
+  }
+
+  return timeChunk.substring(0, 8);
 }
 
-// Convert 24-hour time HH:mm:ss to 12-hour hh:mm:ss A
+// Convert any timestamp or time to Indian Standard 12-hour: hh:mm:ss A
 export function formatToIndianTime(timestampOrTime?: string): string {
   if (!timestampOrTime || timestampOrTime === "—") return "—";
   
-  let timePart = timestampOrTime.trim();
-  if (timePart.includes(" ") && !timePart.includes("AM") && !timePart.includes("PM")) {
-    timePart = timePart.split(" ")[1] || timePart;
-  }
-  if (timePart.includes("T")) {
-    timePart = timePart.split("T")[1] || timePart;
-  }
-  
-  // If already in AM/PM format
-  if (timePart.toUpperCase().includes("AM") || timePart.toUpperCase().includes("PM")) {
-    return timePart;
-  }
+  const time24 = extractTime24(timestampOrTime);
+  if (!time24 || !time24.includes(":")) return timestampOrTime;
 
-  const chunks = timePart.split(":");
+  const chunks = time24.split(":");
   if (chunks.length >= 2) {
     let hours = parseInt(chunks[0], 10);
     const minutes = chunks[1].padStart(2, "0");
@@ -100,44 +144,38 @@ export function formatToIndianDateTime(timestamp?: string): string {
   return `${datePart} ${timePart}`;
 }
 
-// Generate current timestamp in DB format YYYY-MM-DD HH:mm:ss
+// Generate current timestamp in DB format YYYY-MM-DD HH:mm:ss (IST)
 export function getCurrentISTDatabaseTimestamp(): string {
   const now = new Date();
-  const y = now.getFullYear();
-  const m = String(now.getMonth() + 1).padStart(2, "0");
-  const d = String(now.getDate()).padStart(2, "0");
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const ss = String(now.getSeconds()).padStart(2, "0");
+  const utc = now.getTime() + (now.getTimezoneOffset() * 60000);
+  const ist = new Date(utc + (3600000 * 5.5));
+
+  const y = ist.getFullYear();
+  const m = String(ist.getMonth() + 1).padStart(2, "0");
+  const d = String(ist.getDate()).padStart(2, "0");
+  const hh = String(ist.getHours()).padStart(2, "0");
+  const mm = String(ist.getMinutes()).padStart(2, "0");
+  const ss = String(ist.getSeconds()).padStart(2, "0");
   return `${y}-${m}-${d} ${hh}:${mm}:${ss}`;
 }
 
-// Calculate work duration in hours and minutes between two 24h or AM/PM times
+// Calculate work duration in hours and minutes between two times
 export function calculateWorkingDuration(inTime?: string, outTime?: string): { text: string; minutes: number } {
   if (!inTime || inTime === "—" || !outTime || outTime === "—") {
     return { text: "—", minutes: 0 };
   }
 
   try {
-    const parseToMinutes = (timeStr: string): number => {
-      let t = timeStr.trim();
-      if (t.includes(" ")) {
-        const parts = t.split(" ");
-        if (parts[1]?.toUpperCase() === "PM" || parts[1]?.toUpperCase() === "AM") {
-          const [h, m] = parts[0].split(":").map(Number);
-          let hours = h % 12;
-          if (parts[1].toUpperCase() === "PM") hours += 12;
-          return hours * 60 + m;
-        }
-      }
-      const [h, m] = t.split(":").map(Number);
-      return (h || 0) * 60 + (m || 0);
-    };
+    const in24 = extractTime24(inTime);
+    const out24 = extractTime24(outTime);
 
-    const inMin = parseToMinutes(inTime);
-    const outMin = parseToMinutes(outTime);
+    const [inH, inM] = in24.split(":").map(Number);
+    const [outH, outM] = out24.split(":").map(Number);
 
-    let diff = outMin - inMin;
+    const inTotalMin = (inH || 0) * 60 + (inM || 0);
+    const outTotalMin = (outH || 0) * 60 + (outM || 0);
+
+    let diff = outTotalMin - inTotalMin;
     if (diff < 0) {
       // Overnight shift
       diff += 24 * 60;
@@ -152,24 +190,21 @@ export function calculateWorkingDuration(inTime?: string, outTime?: string): { t
   }
 }
 
-// Check if a punch in time is considered Late (after 09:30:00 AM)
-export function isLateArrival(time24OrFormatted: string, graceThreshold: string = "09:30:00"): boolean {
-  if (!time24OrFormatted || time24OrFormatted === "—") return false;
-  let t24 = extractTime24(time24OrFormatted);
-  if (!t24 && time24OrFormatted.includes(":")) {
-    t24 = time24OrFormatted.substring(0, 8);
-  }
-  return t24 > graceThreshold;
+// Check if arrival time exceeds grace cutoff 09:30:00 AM
+export function isLateArrival(timeStr?: string, cutoff: string = "09:30:00"): boolean {
+  if (!timeStr || timeStr === "—") return false;
+  const time24 = extractTime24(timeStr);
+  if (!time24) return false;
+  return time24 > cutoff;
 }
 
-// Get day of week name
-export function getDayOfWeek(dateStr: string): string {
-  try {
-    const [y, m, d] = dateStr.split("-").map(Number);
-    const dt = new Date(y, m - 1, d);
-    const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-    return days[dt.getDay()] || "—";
-  } catch {
-    return "—";
-  }
+// Get day of week name for a YYYY-MM-DD or DD-MM-YYYY date
+export function getDayOfWeek(dateStr?: string): string {
+  if (!dateStr || dateStr === "—") return "";
+  const iso = extractDateKey(dateStr);
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return "";
+  const dateObj = new Date(y, m - 1, d);
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  return days[dateObj.getDay()] || "";
 }
